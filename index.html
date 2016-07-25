@@ -1,15 +1,311 @@
-<!DOCTYPE html>
+<!doctype html>
 <html>
   <head>
-    <meta charset="utf-8">
     <link rel="stylesheet" type="text/css" href="https://cdn.mxpnl.com/libs/mixpanel-platform/css/reset.css">
     <link rel="stylesheet" type="text/css" href="https://cdn.mxpnl.com/libs/mixpanel-platform/build/mixpanel-platform.v0.latest.min.css">
     <script src="https://cdn.mxpnl.com/libs/mixpanel-platform/build/mixpanel-platform.v0.latest.min.js"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/d3/3.5.5/d3.min.js" charset="utf-8"></script>
+    <style>
+     #run {
+        margin-top:5px;
+        float:left;
+        clear:both;
+        padding: 6px 12px;
+        background-color: #61adf0;
+        background-image: -webkit-linear-gradient(#6ab5f2,#53a0ee);
+        background-image: linear-gradient(#6ab5f2,#53a0ee);
+        box-shadow: inset 0 1px 1px #77bdf4,0 2px 2px -1px rgba(0,0,0,0.2);
+        text-transform: uppercase;
+        border: 1px solid #4d93d7;
+        color: #fff;
+        text-shadow: 0 -1px 0 rgba(0,0,0,0.2);
+        border-radius: 3px;
+        cursor: pointer;
+        font-weight: bold;
+      }
+
+      .node circle {
+        fill: #fff;
+        stroke: steelblue;
+        stroke-width: 1.5px;
+      }se
+
+      .node {
+        font: 10px sans-serif;
+
+      }
+
+      .link {
+        fill: none;
+        stroke: steelblue;
+        stroke-linecap: round;
+      }
+    </style>
   </head>
-  <body class="mixpanel-platform-body">
-    <h1>Hello, World!</h1>
+  <body class="mixpanel-platform-body" style="overflow-x:scroll;">
+      <div id="featureSelect" style="float: left;"></div>
+      <div id="dateSelect" style="float: right;"></div>
+      <div style="clear: both;"></div>
+      <button id="run" value="Run" style="display: none;">Run</button>
+    <script id="jql">
+      function topSort(dict) {
+        var stack = []
+        var res = {}
+        _.each(dict, function(v, k){
+          stack.push(k)
+          if (stack.length > params.length){
+            stack.sort(function(a, b){
+              return dict[b] - dict[a]
+            })
+            stack.pop()
+          }
+        })
+        _.each(stack, function(e){
+          res[e] = dict[e]
+        })
+        return res
+      }
+      
+      function createState(state, events) {
+          state = state || {
+              step: 0,
+              next: {},
+          };
+        _.each(events, function(event) {
+          var feature = _.clone(event.properties.featureid)
+          if (feature == params.features[state.step]) {
+            state.step++
+          } else if (state.step >= params.features.length) {
+            if (params.unique) {
+              state.next[feature] = 1
+            } else {
+              state.next[feature] = state.next[feature] ++ || 1
+            }
+          } else {
+            state.step = 0
+          }
+        });
+        return state;
+      }
+  
+      function main() {
+        return Events({
+          from_date: params.from,
+          to_date:   params.to,
+          event_selectors: [{ event: params.eventName }]
+        })
+        .groupByUser(createState)
+        .filter(user => !_.isEmpty(user.value.next))
+        .reduce(function(accums, users){
+          var res = {}
+          _.each(users, function(user){
+            _.each(user.value.next, function(v, k){
+              res[k] = res[k] + v || v
+            })
+          })
+          _.each(accums, function(accum){
+            _.each(accum, function(v, k){
+              res[k] = res[k] + v || v
+            })
+          })
+          return res
+        })
+        .map(topSort)
+      }
+    </script>
     <script>
-      // Run queries and display results here
+      var JQLscript = $('#jql').html()
+      // redundant, jql is faster now
+      MP.api.MAX_SIMULTANEOUS_QUERIES = 30;
+      var datesSelector = $('#dateSelect').MPDatepicker();
+      var rootFeatureSelect = $('#featureSelect')
+      var eventName = 'featureinvoked'
+      var propertyName = 'featureid'
+      var dates = datesSelector.MPDatepicker('value')
+      var params = {
+          from: dates.from,
+          to: dates.to,
+          length: 10,
+          eventName: eventName
+        }
+      
+      // Need Prop Values not Prop Keys
+      
+      var features = MP.api.propertyValues(eventName, propertyName, {limit: 1000}).done(function(r){
+        var options = {items: []}
+        _.each(r.json, function(v,k){
+          options.items.push({value:v, label: v})
+        })
+        rootFeatureSelect.MPSelect(options);
+        $('#run').show();
+      })
+      var rootFeature;
+      /* Global Event List */
+      var graphData = {};
+      
+
+  
+      var width = 800;
+      var height = 750;
+      var cluster = d3.layout.cluster()
+        .size([height, width - 160]);
+      var diagonal = d3.svg.diagonal()
+        .projection(function(d) { return [d.y, d.x]; });
+  
+      var svg = d3.select("body").append("svg")
+        .attr("width", width)
+        .attr("height", height)
+        .call(d3.behavior.zoom().on("zoom", function () {
+                svg.attr("transform", "translate(" + d3.event.translate + ")" + " scale(" + d3.event.scale + ")")
+              })
+            )
+        .append("g")
+        .attr("transform", "translate(40,0)");
+  
+      function addNode(data){
+        d3.selectAll(".text").remove();
+        d3.selectAll(".node").remove();
+        d3.selectAll(".link").remove();
+  
+        var nodes = cluster.nodes(data),
+          links = cluster.links(nodes);
+  
+        nodes.forEach(function(d) { d.y = d.depth * 180; });
+  
+        var allLinks = svg.selectAll(".link").data(links);
+        var link = allLinks.enter().append("path")
+          .attr("class", "link")
+          .style('stroke-width', function(d) {
+            return ( d.target.root * .2 );
+          });
+  
+        allLinks.transition().duration(1000).attr("d", diagonal);
+  
+        var allNodes = svg.selectAll(".node").data(nodes);
+        var node = allNodes.enter().append("g")
+          .attr("class", "node")
+          .attr("transform", function(d) { return "translate(" + d.y + "," + d.x + ")"; })
+          .style('cursor','pointer')
+          .style('opacity', 0.6)
+          .on('mouseover', function(d){
+              d3.select(this).style('opacity', 1.0)
+              d3.select("text").style('opacity', 1.0);
+          })
+          .on('mouseout', function(d){
+            d3.select(this).style('opacity', 0.6)
+          })
+          .on('click', function(val){
+              console.log (val)
+              if (val.children) {
+                val._children = val.children;
+                val.children = null;
+                addNode(graphData)
+              } else if (val._children) {
+                val.children = val._children;
+                addNode(graphData);
+              } else {
+                val._children = true ;
+                nodeQuery(val);
+              }
+          });
+  
+        node.append('svg:title')
+          .text(function(d) {
+            var count = 'Count: ' + String(d.count) + '\n';
+            var parent = 'Conversion From Parent Event: ' + String(d.conversion) + '%\n';
+            var root = 'Conversion From Root Event: ' + String(d.root) + '%';
+            return count + parent + root });
+        node.append("circle")
+            .attr("r", 4.5);
+  
+        node.append("text")
+          .attr("dx", function(d) { return d.children ? 0 : 8; })
+          .attr("dy", function(d) { return d.children ? 18 : 3; })
+          .text(function(d) { return d.name; })
+          .attr("text-anchor", function(d){
+            return ( d.children ? "middle" : undefined );
+          });
+      };
+  
+      /* Let the Funnel Queries Begin... */
+  
+      var nodeQuery = function(node){
+        /* Dict with top counts for each event */
+        var nodes = {};
+        var steps = [node.name];
+        var parent = node.parent;
+        while (parent){
+          steps.push(_.clone(parent.name));
+          parent = parent.parent
+        }
+        steps.reverse();
+        var JQLparams = _.extend({}, params, {features: steps})
+        MP.api.jql(JQLscript, JQLparams).done(function(d) {
+          if (d.length === 0) {
+            alert('No new results')
+          } else {
+            var nodes = d[0]
+            /* Add Data to Graph Data */
+            var total = _.values(nodes).reduce(function(a , b){return a + b;});
+            _.each(nodes, function(val, key){
+              /*
+                Build a node object with the conversion percentage and other meta data and add it to the children
+                of the parent node
+              */
+              var conversion = Math.floor(val / node.count * 100);
+              var root = Math.floor(val / graphData.count * 100);
+              if (conversion < 2 ) { return };
+              if (node.children) {
+                  node.children.push({
+                    'name': key,
+                    'root': root,
+                    'conversion': conversion,
+                    'count': val
+                  });
+              } else {
+                  node.children = [{
+                    'name':key,
+                    'root': root,
+                    'conversion': conversion,
+                    'count': val
+                  }];
+              }
+          })
+        }
+        addNode(graphData);
+            console.log(graphData)
+        });
+      }
+      
+      $('#run').on('click', function(e){
+        var rootFeature = rootFeatureSelect.val()
+        dates = datesSelector.MPDatepicker('value')
+        params.from = new Date(dates.from).toISOString().split('T')[0]
+        params.to = new Date(dates.to).toISOString().split('T')[0]
+        
+        /* This Event Represents the Origin of the User Flow Diagram. */
+        
+        graphData = {
+          'name': rootFeature,
+          'conversion': 100,
+          'root': 100,
+        };
+        
+        /* Test for Dynamic */
+        var rootParams = {
+          from: params.from,
+          to: params.to,
+          where: '(properties["' + propertyName + '"] == "' + rootFeature + '")'
+        }
+        
+        /* Find the Root Event Count */
+        var rootFeatureCount = MP.api.segment(eventName,rootParams);
+        
+        $.when(rootFeatureCount).done(function(eventCount){
+            graphData.count = eventCount.sum().values()[eventName];
+            addNode(graphData);
+        });
+      });
     </script>
   </body>
 </html>
